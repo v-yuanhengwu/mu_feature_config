@@ -29,5 +29,4 @@ extern UINT8  gProfileFlavorIds[];
 // Multiple GN
 extern PROFILE    gGnProfileData[];
 extern UINTN      gNumGnProfiles;
-extern CHAR8      *gGnProfileFlavorNames[];
 #endif // PLATFORM_CONFIG_DATA_LIB_H_

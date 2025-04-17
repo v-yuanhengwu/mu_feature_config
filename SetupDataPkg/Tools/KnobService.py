@@ -1083,10 +1083,8 @@ def generate_profiles(schema, profile_header_path, profile_paths, efi_type, prof
             # if base_name is Platform_75_AS, pid is 75
             base_name = os.path.splitext(os.path.basename(profile_path))[0]
             pid = base_name.split("_")[-2]
-            # if pid is FF, it is one of the Multiple GN profiles
-            if pid == "FF":
-                out.write("//  GN Profile: {}".format(profile_path) + get_line_ending(efi_type))
-            else:
+            # if pid is FF, it is one of the Multiple GN profiles and needs to be skipped
+            if pid != "FF":
                 out.write("//  Profile: {}".format(profile_path) + get_line_ending(efi_type))
 
         out.write("" + get_line_ending(efi_type))
@@ -1096,13 +1094,14 @@ def generate_profiles(schema, profile_header_path, profile_paths, efi_type, prof
         format_options.efi_format = efi_type
 
         profiles = []
-        gn_profiles = []
         name_id_dict = {}
         for profile_path in profile_paths:
             base_name = os.path.splitext(os.path.basename(profile_path))[0]
             pname = base_name.split("_")[-1]
             pid = base_name.split("_")[-2]
             name_id_dict[pname] = pid
+            if pid == "FF":
+                continue  # Skip the Multiple GN profile
             out.write("// Profile {}".format(base_name) + get_line_ending(efi_type))
             # Reset the schema to defaults
             for knob in schema.knobs:
@@ -1182,11 +1181,7 @@ def generate_profiles(schema, profile_header_path, profile_paths, efi_type, prof
             out.write("};" + get_line_ending(efi_type))
             out.write("" + get_line_ending(efi_type))
 
-            # Separate profiles and GN profiles
-            if pid == "FF":
-                gn_profiles.append((base_name, override_count))
-            else:
-                profiles.append((base_name, override_count))
+            profiles.append((base_name, override_count))
 
         # Create gProfileData according to profiles
         out.write("" + get_line_ending(efi_type))
@@ -1233,7 +1228,6 @@ def generate_profiles(schema, profile_header_path, profile_paths, efi_type, prof
                 names_list = [format(i, '02x') for i in range(len(profile_paths))]
 
             # Separate Profile names and Multiple GN names
-            gn_names_list = [name for name in names_list if name_id_dict.get(name, "") == "FF"]
             names_list = [name for name in names_list if name_id_dict.get(name, "") != "FF"]
 
             # Create gProfileFlavorNames according to names_list
@@ -1274,44 +1268,188 @@ def generate_profiles(schema, profile_header_path, profile_paths, efi_type, prof
             )
             out.write(get_line_ending(efi_type))
 
-            # Multiple GN Profiles >>>
-            # Create gGnProfileData according to gn_profiles
-            if len(gn_profiles) > 0:
-                out.write(get_line_ending(efi_type))
-                out.write(get_line_ending(efi_type))
-                out.write("#define GN_PROFILE_COUNT {}".format(len(gn_profiles)) + get_line_ending(efi_type))
-                if not efi_type:
-                    out.write("{} {}[GN_PROFILE_COUNT + 1] = ".format(
-                        naming_convention_filter("profile_t", True, efi_type),
-                        naming_convention_filter("gnprofiles", False, efi_type)
-                    ) + get_line_ending(efi_type) + "{" + get_line_ending(efi_type))
-                else:
-                    out.write("{} g{}[GN_PROFILE_COUNT + 1] = ".format(
-                        naming_convention_filter("profile_t", True, efi_type),
-                        naming_convention_filter("gn_profile_data", False, efi_type)
-                    ) + get_line_ending(efi_type) + "{" + get_line_ending(efi_type))
-                for (profile, override_count) in gn_profiles:
+        out.write(get_include_once_style(profile_header_path, uefi=efi_type, header=False))
+
+
+def generate_gn_profiles(schema, profile_header_path, profile_paths, efi_type, profile_names=None):
+    # Read existing file content
+    with open(profile_header_path, 'r') as out:
+        lines = out.readlines()
+
+    # Find the last #endif and collect it and everything after
+    endif_index = -1
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].strip().startswith('#endif'):
+            endif_index = i
+            break
+
+    # If #endif is found, split lines before and after
+    if endif_index != -1:
+        # Save lines after (and including) #endif for later restore
+        preserved_tail = lines[endif_index:]
+        # Truncate the file to exclude these lines
+        with open(profile_header_path, 'w', newline='') as out:
+            out.writelines(lines[:endif_index])
+    else:
+        preserved_tail = []
+
+    with open(profile_header_path, 'a', newline='') as out:
+        out.write(get_line_ending(efi_type))
+        out.write("// The config public header must be included prior to this file" + get_line_ending(efi_type))
+        out.write("// Generated Header" + get_line_ending(efi_type))
+        out.write("//  Script: {}".format(sys.argv[0]) + get_line_ending(efi_type))
+        out.write("//  Schema: {}".format(schema.path) + get_line_ending(efi_type))
+        for profile_path in profile_paths:
+            # if base_name is Platform_75_AS, pid is 75
+            base_name = os.path.splitext(os.path.basename(profile_path))[0]
+            pid = base_name.split("_")[-2]
+            # if pid is FF, it is one of the Multiple GN profiles
+            if pid == "FF":
+                out.write("//  GN Profile: {}".format(profile_path) + get_line_ending(efi_type))
+
+        out.write("" + get_line_ending(efi_type))
+
+        format_options = VariableList.StringFormatOptions()
+        format_options.c_format = True
+        format_options.efi_format = efi_type
+
+        profiles = []
+        name_id_dict = {}
+        for profile_path in profile_paths:
+            base_name = os.path.splitext(os.path.basename(profile_path))[0]
+            pname = base_name.split("_")[-1]
+            pid = base_name.split("_")[-2]
+            name_id_dict[pname] = pid
+            if pid != "FF":
+                continue  # Skip profiles which have been done by generate_profiles
+            out.write("// Multiple GN Profile {}".format(base_name) + get_line_ending(efi_type))
+            # Reset the schema to defaults
+            for knob in schema.knobs:
+                knob.value = None
+
+            # Read the csv to override the values in the schema
+            VariableList.read_csv(schema, profile_path)
+
+            override_count = 0
+
+            out.write("typedef struct {" + get_line_ending(efi_type))
+            for knob in schema.knobs:
+                if knob.value is not None:
+                    override_count = override_count + 1
+                    out.write(get_spacing_string(efi_type) + "{} {};".format(
+                        get_type_string(knob.format.c_type, efi_type),
+                        knob.name) + get_line_ending(efi_type))
+            out.write("}} {}{}{};".format(
+                naming_convention_filter("profile_", True, efi_type),
+                base_name,
+                naming_convention_filter("_data_t", True, efi_type)
+            ) + get_line_ending(efi_type))
+
+            out.write("" + get_line_ending(efi_type))
+            out.write("{}{}{} {}{}{} = {{".format(
+                naming_convention_filter("profile_", True, efi_type),
+                base_name,
+                naming_convention_filter("_data_t", True, efi_type),
+                naming_convention_filter("profile_", False, efi_type),
+                base_name,
+                naming_convention_filter("_data", False, efi_type)
+            ) + get_line_ending(efi_type))
+            for knob in schema.knobs:
+                if knob.value is not None:
+                    out.write("    .{}={},".format(
+                        knob.name,
+                        knob.format.object_to_string(knob.value, format_options)) + get_line_ending(efi_type))
+            out.write("};" + get_line_ending(efi_type))
+            out.write("" + get_line_ending(efi_type))
+            out.write("#define PROFILE_{}_OVERRIDES".format(base_name.upper()) + get_line_ending(efi_type))
+            out.write("#define PROFILE_{}_OVERRIDES_COUNT {}".format(
+                base_name.upper(),
+                override_count
+            ) + get_line_ending(efi_type))
+            out.write("{} {}{}{}[PROFILE_{}_OVERRIDES_COUNT + 1] = {{".format(
+                naming_convention_filter("knob_override_t", True, efi_type),
+                naming_convention_filter("profile_", False, efi_type),
+                base_name,
+                naming_convention_filter("_overrides", False, efi_type),
+                base_name.upper()
+            ) + get_line_ending(efi_type))
+
+            for knob in schema.knobs:
+                if knob.value is not None:
                     out.write(get_spacing_string(efi_type) + "{" + get_line_ending(efi_type))
-                    out.write(get_spacing_string(efi_type, 2) + ".{} = {}{}{},".format(
-                        naming_convention_filter("overrides", False, efi_type),
-                        naming_convention_filter("profile_", False, efi_type),
-                        profile,
-                        naming_convention_filter("_overrides", False, efi_type)
+                    out.write(get_spacing_string(efi_type, 2) + ".{} = KNOB_{},".format(
+                        naming_convention_filter("knob", False, efi_type),
+                        knob.name
                     ) + get_line_ending(efi_type))
-                    out.write(get_spacing_string(efi_type, 2) + ".{} = {},".format(
-                        naming_convention_filter("override_count", False, efi_type),
-                        override_count
+                    out.write(get_spacing_string(efi_type, 2) + ".{} = &{}{}{}.{},".format(
+                        naming_convention_filter("value", False, efi_type),
+                        naming_convention_filter("profile_", False, efi_type),
+                        base_name,
+                        naming_convention_filter("_data", False, efi_type),
+                        knob.name
                     ) + get_line_ending(efi_type))
                     out.write(get_spacing_string(efi_type) + "}," + get_line_ending(efi_type))
-                out.write(get_spacing_string(efi_type) + "{" + get_line_ending(efi_type))
-                out.write(get_spacing_string(efi_type, 2) + ".{} = NULL,".format(
-                    naming_convention_filter("overrides", False, efi_type)
-                ) + get_line_ending(efi_type))
-                out.write(get_spacing_string(efi_type, 2) + ".{} = 0,".format(
-                    naming_convention_filter("override_count", False, efi_type)
-                ) + get_line_ending(efi_type))
-                out.write(get_spacing_string(efi_type) + "}" + get_line_ending(efi_type))
-                out.write("};" + get_line_ending(efi_type))
+
+            out.write(get_spacing_string(efi_type) + "{" + get_line_ending(efi_type))
+            out.write(get_spacing_string(efi_type, 2) + ".{} = KNOB_MAX,".format(
+                naming_convention_filter("knob", False, efi_type)
+            ) + get_line_ending(efi_type))
+            out.write(get_spacing_string(efi_type, 2) + ".{} = NULL,".format(
+                naming_convention_filter("value", False, efi_type)
+            ) + get_line_ending(efi_type))
+            out.write(get_spacing_string(efi_type) + "}" + get_line_ending(efi_type))
+            out.write("};" + get_line_ending(efi_type))
+            out.write("" + get_line_ending(efi_type))
+
+            profiles.append((base_name, override_count))
+
+        # Create gGnProfileData according to profiles
+        out.write("" + get_line_ending(efi_type))
+        out.write("#define GN_PROFILE_COUNT {}".format(len(profiles)) + get_line_ending(efi_type))
+        if not efi_type:
+            out.write("{} {}[GN_PROFILE_COUNT + 1] = ".format(
+                naming_convention_filter("profile_t", True, efi_type),
+                naming_convention_filter("gn_profiles", False, efi_type)
+            ) + get_line_ending(efi_type) + "{" + get_line_ending(efi_type))
+        else:
+            out.write("{} g{}[GN_PROFILE_COUNT + 1] = ".format(
+                naming_convention_filter("profile_t", True, efi_type),
+                naming_convention_filter("gn_profile_data", False, efi_type)
+            ) + get_line_ending(efi_type) + "{" + get_line_ending(efi_type))
+        for (profile, override_count) in profiles:
+            out.write(get_spacing_string(efi_type) + "{" + get_line_ending(efi_type))
+            out.write(get_spacing_string(efi_type, 2) + ".{} = {}{}{},".format(
+                naming_convention_filter("overrides", False, efi_type),
+                naming_convention_filter("profile_", False, efi_type),
+                profile,
+                naming_convention_filter("_overrides", False, efi_type)
+            ) + get_line_ending(efi_type))
+            out.write(get_spacing_string(efi_type, 2) + ".{} = {},".format(
+                naming_convention_filter("override_count", False, efi_type),
+                override_count
+            ) + get_line_ending(efi_type))
+            out.write(get_spacing_string(efi_type) + "}," + get_line_ending(efi_type))
+        out.write(get_spacing_string(efi_type) + "{" + get_line_ending(efi_type))
+        out.write(get_spacing_string(efi_type, 2) + ".{} = NULL,".format(
+            naming_convention_filter("overrides", False, efi_type)
+        ) + get_line_ending(efi_type))
+        out.write(get_spacing_string(efi_type, 2) + ".{} = 0,".format(
+            naming_convention_filter("override_count", False, efi_type)
+        ) + get_line_ending(efi_type))
+        out.write(get_spacing_string(efi_type) + "}" + get_line_ending(efi_type))
+        out.write("};" + get_line_ending(efi_type))
+
+        # Process argument profile_names
+        if efi_type:
+            if len(profiles) > 0:
+                if profile_names is not None:
+                    names_list = profile_names.split(",")
+                else:
+                    # If not specified, the indices will be the default profile names
+                    names_list = [format(i, '02x') for i in range(len(profile_paths))]
+
+                # Separate Profile names and Multiple GN names
+                names_list = [name for name in names_list if name_id_dict.get(name, "") == "FF"]
 
                 # Create gGnProfileFlavorNames according to names_list
                 out.write(get_line_ending(efi_type))
@@ -1319,19 +1457,21 @@ def generate_profiles(schema, profile_header_path, profile_paths, efi_type, prof
                     naming_convention_filter("_gn_profile_flavor_names", False, efi_type)) + " = {"
                 )
                 out.write(get_line_ending(efi_type))
-                for profile_name in gn_names_list:
+                for profile_name in names_list:
                     out.write(get_spacing_string(efi_type) + '"' + profile_name + '",' + get_line_ending(efi_type))
                 out.write("};" + get_line_ending(efi_type))
-                out.write(get_line_ending(efi_type))
 
-                # Create gNumGnProfiles
-                out.write(get_type_string("size_t", efi_type) + " g{} = GN_PROFILE_COUNT;".format(
-                    naming_convention_filter("_num_gn_profiles", False, efi_type))
-                )
-                out.write(get_line_ending(efi_type))
-            # Multiple GN Profiles <<<
+            # Create gNumGnProfiles
+            out.write(get_line_ending(efi_type))
+            out.write(get_type_string("size_t", efi_type) + " g{} = GN_PROFILE_COUNT;".format(
+                naming_convention_filter("_num_gn_profiles", False, efi_type))
+            )
+            out.write(get_line_ending(efi_type))
 
-        out.write(get_include_once_style(profile_header_path, uefi=efi_type, header=False))
+    # Restore
+    if preserved_tail:
+        with open(profile_header_path, 'a', encoding='utf-8', newline='') as f:
+            f.writelines(preserved_tail)
 
 
 def generate_sources(schema, public_header, service_header, data_header, efi_type, options):
@@ -1492,6 +1632,10 @@ def main():
 
             generate_profiles(schema, profile_header_path, profile_paths, efi_type,
                               profile_names=known_args.profile_names, profile_ids=formatted_profile_ids)
+
+            generate_gn_profiles(schema, profile_header_path, profile_paths, efi_type,
+                                 profile_names=known_args.profile_names)
+
         return 0
 
 
